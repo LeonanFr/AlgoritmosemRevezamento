@@ -47,8 +47,8 @@ func init() {
 		"kotlin": {
 			Name:        "Kotlin",
 			Extension:   ".kt",
-			CompileCmd:  []string{"kotlinc", "code.kt", "-include-runtime", "-d", "code.jar"},
-			RunCmd:      []string{"java", "-jar", "code.jar"},
+			CompileCmd:  []string{"kotlinc", "-J-Xmx256m", "code.kt", "-include-runtime", "-d", "code.jar"},
+			RunCmd:      []string{"java", "-Xmx256m", "-jar", "code.jar"},
 			NeedCompile: true,
 		},
 		"javascript": {
