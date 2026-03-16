@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -64,7 +65,10 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	err = json.NewEncoder(w).Encode(result)
+	if err != nil {
+		return
+	}
 }
 
 func main() {
@@ -73,7 +77,16 @@ func main() {
 		port = "8080"
 	}
 
-	http.HandleFunc("/test", testHandler)
-	log.Printf("Server listening on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	srv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      http.HandlerFunc(testHandler),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	log.Printf("Server listening on port %s with timeouts", port)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
 }
