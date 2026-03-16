@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"os/exec"
+	"time"
 )
 
 func compile(ctx context.Context, lang Language, workDir string, codePath string) ([]byte, error) {
@@ -22,6 +23,7 @@ func compile(ctx context.Context, lang Language, workDir string, codePath string
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = workDir
+	cmd.WaitDelay = 10 * time.Millisecond
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

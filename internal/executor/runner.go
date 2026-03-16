@@ -35,6 +35,7 @@ func runWithLimits(ctx context.Context, lang Language, workDir string, input str
 
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(input)
+	cmd.WaitDelay = 10 * time.Millisecond
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
