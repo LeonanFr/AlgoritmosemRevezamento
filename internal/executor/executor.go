@@ -43,17 +43,15 @@ type Result struct {
 func Execute(ctx context.Context, code string, lang string, testCases []TestCase, timeLimitSec int, memoryLimitMB int) (*Result, error) {
 	langDef, ok := languages[lang]
 	if !ok {
-		return nil, fmt.Errorf("linguagem não suportada: %s", lang)
+		return nil, fmt.Errorf("linguagem indisponivel: %s", lang)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "executor-*")
+	tmpDir, err := os.MkdirTemp("", "exec-*")
 	if err != nil {
-		return nil, fmt.Errorf("erro ao criar diretório temporário: %w", err)
+		return nil, fmt.Errorf("falha ao gerar pasta: %w", err)
 	}
 	defer func(path string) {
-		err := os.RemoveAll(path)
-		if err != nil {
-		}
+		_ = os.RemoveAll(path)
 	}(tmpDir)
 
 	var filename string
@@ -65,18 +63,19 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 	default:
 		filename = "code" + langDef.Extension
 	}
+
 	codePath := filepath.Join(tmpDir, filename)
 	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
-		return nil, fmt.Errorf("erro ao escrever código: %w", err)
+		return nil, fmt.Errorf("falha ao salvar script: %w", err)
 	}
 
 	if langDef.NeedCompile {
 		compileOutput, err := compile(ctx, langDef, tmpDir, codePath)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return &Result{
 					Verdict: VerdictTimeLimitExceeded,
-					Message: "Compilação interrompida: excedeu o tempo limite global.",
+					Message: "esgotamento de cronometro na fase de build",
 				}, nil
 			}
 			return &Result{
@@ -94,7 +93,7 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 		output, runTime, err := runWithLimits(ctx, langDef, tmpDir, tc.Input, timeLimitSec, memoryLimitMB)
 
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				overallVerdict = VerdictTimeLimitExceeded
 			} else {
 				overallVerdict = VerdictRuntimeError

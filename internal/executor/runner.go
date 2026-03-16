@@ -56,9 +56,9 @@ func runWithLimits(ctx context.Context, lang Language, workDir string, input str
 		case <-ctxTimeout.Done():
 			if cmd.Process != nil {
 				if runtime.GOOS == "linux" {
-					syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 				} else {
-					cmd.Process.Kill()
+					_ = cmd.Process.Kill()
 				}
 			}
 		case <-done:
@@ -73,6 +73,9 @@ func runWithLimits(ctx context.Context, lang Language, workDir string, input str
 	elapsed := time.Since(start).Seconds()
 	output := append(outBytes, errBytes...)
 
+	if ctx.Err() != nil {
+		return output, elapsed, ctx.Err()
+	}
 	if errors.Is(ctxTimeout.Err(), context.DeadlineExceeded) {
 		return output, elapsed, context.DeadlineExceeded
 	}
