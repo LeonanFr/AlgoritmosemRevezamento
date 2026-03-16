@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -16,22 +18,60 @@ func runWithLimits(ctx context.Context, lang Language, workDir string, input str
 
 	var cmd *exec.Cmd
 
-	cmdArgs := buildCommandArgs(lang, memoryLimitMB)
-
 	if runtime.GOOS == "linux" && memoryLimitMB > 0 && !isVM(lang.Name) {
 		memKB := memoryLimitMB * 1024
-		cmdLine := fmt.Sprintf("ulimit -v %d && exec %s", memKB, strings.Join(cmdArgs, " "))
+		cmdLine := fmt.Sprintf("ulimit -v %d && exec %s", memKB, strings.Join(lang.RunCmd, " "))
 		cmd = exec.CommandContext(ctxTimeout, "sh", "-c", cmdLine)
 	} else {
-		cmd = exec.CommandContext(ctxTimeout, cmdArgs[0], cmdArgs[1:]...)
+		cmd = exec.CommandContext(ctxTimeout, lang.RunCmd[0], lang.RunCmd[1:]...)
+	}
+
+	if runtime.GOOS == "linux" {
+		if cmd.SysProcAttr == nil {
+			cmd.SysProcAttr = &syscall.SysProcAttr{}
+		}
+		cmd.SysProcAttr.Setpgid = true
 	}
 
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(input)
 
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, 0, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, 0, err
+	}
+
 	start := time.Now()
-	output, err := cmd.CombinedOutput()
+	if err := cmd.Start(); err != nil {
+		return nil, 0, err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctxTimeout.Done():
+			if cmd.Process != nil {
+				if runtime.GOOS == "linux" {
+					syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				} else {
+					cmd.Process.Kill()
+				}
+			}
+		case <-done:
+		}
+	}()
+
+	outBytes, _ := io.ReadAll(stdout)
+	errBytes, _ := io.ReadAll(stderr)
+	err = cmd.Wait()
+	close(done)
+
 	elapsed := time.Since(start).Seconds()
+	output := append(outBytes, errBytes...)
 
 	if errors.Is(ctxTimeout.Err(), context.DeadlineExceeded) {
 		return output, elapsed, context.DeadlineExceeded
@@ -41,26 +81,7 @@ func runWithLimits(ctx context.Context, lang Language, workDir string, input str
 	}
 	return output, elapsed, nil
 }
+
 func isVM(langName string) bool {
 	return langName == "Java" || langName == "Kotlin" || langName == "JavaScript"
-}
-func buildCommandArgs(lang Language, memoryLimitMB int) []string {
-	if memoryLimitMB <= 0 {
-		args := make([]string, len(lang.RunCmd))
-		copy(args, lang.RunCmd)
-		return args
-	}
-
-	switch lang.Name {
-	case "Java":
-		return []string{"java", fmt.Sprintf("-Xmx%dm", memoryLimitMB), "-cp", ".", "Main"}
-	case "Kotlin":
-		return []string{"java", fmt.Sprintf("-Xmx%dm", memoryLimitMB), "-jar", "code.jar"}
-	case "JavaScript":
-		return []string{"node", fmt.Sprintf("--max-old-space-size=%d", memoryLimitMB), "code.js"}
-	default:
-		args := make([]string, len(lang.RunCmd))
-		copy(args, lang.RunCmd)
-		return args
-	}
 }
