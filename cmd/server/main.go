@@ -81,7 +81,7 @@ func main() {
 		Addr:         ":" + port,
 		Handler:      http.HandlerFunc(testHandler),
 		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
