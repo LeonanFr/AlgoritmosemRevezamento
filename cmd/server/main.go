@@ -33,39 +33,26 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Inputs) != len(req.Expected) {
-		http.Error(w, "inputs and expected must have same length", http.StatusBadRequest)
-		return
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	testCases := make([]executor.TestCase, len(req.Inputs))
 	for i := range req.Inputs {
-		testCases[i] = executor.TestCase{
-			Input:    req.Inputs[i],
-			Expected: req.Expected[i],
-		}
+		testCases[i] = executor.TestCase{Input: req.Inputs[i], Expected: req.Expected[i]}
 	}
 
-	timeLimit := req.TimeLimit
-	if timeLimit <= 0 {
-		timeLimit = 5
-	}
-	memLimit := req.MemLimit
-	if memLimit <= 0 {
-		memLimit = 256
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeLimit)*time.Second)
-	defer cancel()
-
-	result, err := executor.Execute(ctx, req.Code, req.Language, testCases, timeLimit, memLimit)
+	result, err := executor.Execute(ctx, req.Code, req.Language, testCases, req.TimeLimit, req.MemLimit)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			http.Error(w, "timeout: a operação excedeu o limite global de 5s", http.StatusRequestTimeout)
+			return
+		}
 		http.Error(w, "executor error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(result)
+	err := json.NewEncoder(w).Encode(result)
 	if err != nil {
 		return
 	}
