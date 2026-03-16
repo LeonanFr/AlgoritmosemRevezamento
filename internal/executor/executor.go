@@ -73,6 +73,12 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 	if langDef.NeedCompile {
 		compileOutput, err := compile(ctx, langDef, tmpDir, codePath)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return &Result{
+					Verdict: VerdictTimeLimitExceeded,
+					Message: "Compilação interrompida: excedeu o tempo limite global.",
+				}, nil
+			}
 			return &Result{
 				Verdict: VerdictCompilationError,
 				Message: string(compileOutput),

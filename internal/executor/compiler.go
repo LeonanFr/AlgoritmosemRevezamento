@@ -22,5 +22,12 @@ func compile(ctx context.Context, lang Language, workDir string, codePath string
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = workDir
-	return cmd.CombinedOutput()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return output, ctx.Err()
+		}
+	}
+	return output, err
 }
