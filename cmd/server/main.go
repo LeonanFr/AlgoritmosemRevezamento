@@ -38,7 +38,17 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timeLimit := req.TimeLimit
+	if timeLimit <= 0 {
+		timeLimit = 5
+	}
+	memLimit := req.MemLimit
+	if memLimit <= 0 {
+		memLimit = 256
+	}
+
+	globalLimit := timeLimit + 10
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(globalLimit)*time.Second)
 	defer cancel()
 
 	testCases := make([]executor.TestCase, len(req.Inputs))
@@ -49,15 +59,6 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	timeLimit := req.TimeLimit
-	if timeLimit <= 0 {
-		timeLimit = 5
-	}
-	memLimit := req.MemLimit
-	if memLimit <= 0 {
-		memLimit = 256
-	}
-
 	result, err := executor.Execute(ctx, req.Code, req.Language, testCases, timeLimit, memLimit)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
@@ -65,7 +66,7 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusRequestTimeout)
 			_ = json.NewEncoder(w).Encode(executor.Result{
 				Verdict: executor.VerdictTimeLimitExceeded,
-				Message: "timeout global de 5s atingido",
+				Message: "limite de tempo total esgotado",
 			})
 			return
 		}
