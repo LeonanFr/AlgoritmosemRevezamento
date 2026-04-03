@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func compile(ctx context.Context, lang Language, workDir string, codePath string) ([]byte, error) {
+func Compile(ctx context.Context, lang *Language, workDir string, codePath string) ([]byte, error) {
 	if lang.CompileCmd == nil {
 		return nil, nil
 	}

@@ -40,10 +40,39 @@ type Result struct {
 	TotalTime float64          `json:"totalTime,omitempty"`
 }
 
-func Execute(ctx context.Context, code string, lang string, testCases []TestCase, timeLimitSec int, memoryLimitMB int) (*Result, error) {
-	langDef, ok := languages[lang]
+func GetLanguage(name string) (*Language, error) {
+	lang, ok := languages[name]
 	if !ok {
-		return nil, fmt.Errorf("linguagem indisponivel: %s", lang)
+		return nil, fmt.Errorf("linguagem indisponivel: %s", name)
+	}
+	return &lang, nil
+}
+
+func CompareOutput(actual, expected string) bool {
+	norm := func(s string) string {
+		s = trimSpace(s)
+		s = strings.ReplaceAll(s, "\r\n", "\n")
+		return s
+	}
+	return norm(actual) == norm(expected)
+}
+
+func Execute(ctx context.Context, code string, lang string, testCases []TestCase, timeLimitSec int, memoryLimitMB int) (*Result, error) {
+	langDef, err := GetLanguage(lang)
+	if err != nil {
+		return nil, err
+	}
+
+	if lang == "java" || lang == "kotlin" {
+		if globalPool == nil {
+			return nil, fmt.Errorf("pool JVM ausente")
+		}
+		worker := GetJVMWorker()
+		res := worker.Execute(lang, code, testCases, timeLimitSec)
+
+		tainted := res.Verdict == VerdictTimeLimitExceeded || res.Verdict == VerdictRuntimeError || res.Verdict == ""
+		ReleaseJVMWorker(worker, tainted)
+		return res, nil
 	}
 
 	tmpDir, err := os.MkdirTemp("", "exec-*")
@@ -54,23 +83,14 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 		_ = os.RemoveAll(path)
 	}(tmpDir)
 
-	var filename string
-	switch lang {
-	case "java":
-		filename = "Main.java"
-	case "kotlin":
-		filename = "code.kt"
-	default:
-		filename = "code" + langDef.Extension
-	}
-
+	filename := "code" + langDef.Extension
 	codePath := filepath.Join(tmpDir, filename)
 	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
 		return nil, fmt.Errorf("falha ao salvar script: %w", err)
 	}
 
 	if langDef.NeedCompile {
-		compileOutput, err := compile(ctx, langDef, tmpDir, codePath)
+		compileOutput, err := Compile(ctx, langDef, tmpDir, codePath)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return &Result{
@@ -90,7 +110,7 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 	totalTime := 0.0
 
 	for i, tc := range testCases {
-		output, runTime, err := runWithLimits(ctx, langDef, tmpDir, tc.Input, timeLimitSec, memoryLimitMB)
+		output, runTime, err := RunCase(ctx, langDef, tmpDir, tc.Input, timeLimitSec, memoryLimitMB)
 
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -109,7 +129,7 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 			break
 		}
 
-		passed := compareOutput(string(output), tc.Expected)
+		passed := CompareOutput(string(output), tc.Expected)
 		results = append(results, TestCaseResult{
 			Number:   i + 1,
 			Passed:   passed,
@@ -133,15 +153,6 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 	}, nil
 }
 
-func compareOutput(actual, expected string) bool {
-	norm := func(s string) string {
-		s = trimSpace(s)
-		s = strings.ReplaceAll(s, "\r\n", "\n")
-		return s
-	}
-	return norm(actual) == norm(expected)
-}
-
 func trimSpace(s string) string {
 	start, end := 0, len(s)-1
 	for start <= end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
@@ -154,4 +165,21 @@ func trimSpace(s string) string {
 		return ""
 	}
 	return s[start : end+1]
+}
+
+func VerdictToString(v Verdict) string {
+	switch v {
+	case VerdictAccepted:
+		return "Accepted"
+	case VerdictWrongAnswer:
+		return "Wrong Answer"
+	case VerdictRuntimeError:
+		return "Runtime Error"
+	case VerdictTimeLimitExceeded:
+		return "Time Limit Exceeded"
+	case VerdictCompilationError:
+		return "Compilation Error"
+	default:
+		return ""
+	}
 }

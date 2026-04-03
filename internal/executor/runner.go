@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func runWithLimits(ctx context.Context, lang Language, workDir string, input string, timeLimitSec int, memoryLimitMB int) ([]byte, float64, error) {
+func RunCase(ctx context.Context, lang *Language, workDir string, input string, timeLimitSec int, memoryLimitMB int) ([]byte, float64, error) {
 	ctxTimeout, cancel := context.WithTimeout(ctx, time.Duration(timeLimitSec)*time.Second)
 	defer cancel()
 
