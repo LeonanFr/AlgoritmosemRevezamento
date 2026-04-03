@@ -20,7 +20,7 @@ func main() {
 	cfg := config.Load()
 
 	if err := executor.InitJVMPool(cfg.JVMPoolSize, cfg.JVMClasspath, cfg.JVMXmx); err != nil {
-		log.Printf("Aviso: falha ao iniciar pool JVM: %v", err)
+		log.Fatalf("Falha crítica ao iniciar pool JVM: %v", err)
 	}
 
 	if cfg.EnablePreWarm {

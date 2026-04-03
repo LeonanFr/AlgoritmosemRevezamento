@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type Verdict string
@@ -49,12 +50,20 @@ func GetLanguage(name string) (*Language, error) {
 }
 
 func CompareOutput(actual, expected string) bool {
-	norm := func(s string) string {
-		s = trimSpace(s)
+	normalize := func(s string) string {
 		s = strings.ReplaceAll(s, "\r\n", "\n")
-		return s
+		lines := strings.Split(s, "\n")
+		var normLines []string
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				fields := strings.Fields(trimmed)
+				normLines = append(normLines, strings.Join(fields, " "))
+			}
+		}
+		return strings.Join(normLines, "\n")
 	}
-	return norm(actual) == norm(expected)
+	return normalize(actual) == normalize(expected)
 }
 
 func Execute(ctx context.Context, code string, lang string, testCases []TestCase, timeLimitSec int, memoryLimitMB int) (*Result, error) {
@@ -90,18 +99,14 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 	}
 
 	if langDef.NeedCompile {
-		compileOutput, err := Compile(ctx, langDef, tmpDir, codePath)
+		compileCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		compileOutput, err := Compile(compileCtx, langDef, tmpDir, codePath)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return &Result{
-					Verdict: VerdictTimeLimitExceeded,
-					Message: "esgotamento de cronometro na fase de build",
-				}, nil
+			if errors.Is(err, context.DeadlineExceeded) {
+				return &Result{Verdict: VerdictTimeLimitExceeded, Message: "tempo limite na compilação"}, nil
 			}
-			return &Result{
-				Verdict: VerdictCompilationError,
-				Message: string(compileOutput),
-			}, nil
+			return &Result{Verdict: VerdictCompilationError, Message: string(compileOutput)}, nil
 		}
 	}
 
@@ -111,12 +116,14 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 
 	for i, tc := range testCases {
 		output, runTime, err := RunCase(ctx, langDef, tmpDir, tc.Input, timeLimitSec, memoryLimitMB)
-
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				overallVerdict = VerdictTimeLimitExceeded
 			} else {
 				overallVerdict = VerdictRuntimeError
+				if len(output) == 0 {
+					output = []byte(err.Error())
+				}
 			}
 			results = append(results, TestCaseResult{
 				Number:   i + 1,

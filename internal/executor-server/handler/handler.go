@@ -1,18 +1,12 @@
 package handler
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sync"
-	"time"
-
 	"Algorithms/internal/executor"
 	"Algorithms/internal/executor-server/config"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os/exec"
 )
 
 type ExecuteRequest struct {
@@ -113,6 +107,34 @@ func (h *Handler) executeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mode := req.Mode
+	if mode == "" {
+		mode = "test"
+	}
+
+	var testCases []executor.TestCase
+	if mode == "test" {
+		limit := 3
+		if len(req.Inputs) < limit {
+			limit = len(req.Inputs)
+		}
+		testCases = make([]executor.TestCase, limit)
+		for i := 0; i < limit; i++ {
+			testCases[i] = executor.TestCase{
+				Input:    req.Inputs[i],
+				Expected: req.Expected[i],
+			}
+		}
+	} else {
+		testCases = make([]executor.TestCase, len(req.Inputs))
+		for i := range req.Inputs {
+			testCases[i] = executor.TestCase{
+				Input:    req.Inputs[i],
+				Expected: req.Expected[i],
+			}
+		}
+	}
+
 	timeLimit := req.TimeLimit
 	if timeLimit <= 0 {
 		timeLimit = h.cfg.DefaultTimeLimit
@@ -125,167 +147,41 @@ func (h *Handler) executeHandler(w http.ResponseWriter, r *http.Request) {
 	h.pool <- struct{}{}
 	defer func() { <-h.pool }()
 
-	langDef, err := executor.GetLanguage(req.Language)
+	result, err := executor.Execute(r.Context(), req.Code, req.Language, testCases, timeLimit, memLimit)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	tmpDir, err := os.MkdirTemp("", "exec-*")
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer func(path string) {
-		err := os.RemoveAll(path)
-		if err != nil {
-		}
-	}(tmpDir)
-
-	var filename string
-	switch req.Language {
-	case "java":
-		filename = "Main.java"
-	case "kotlin":
-		filename = "code.kt"
-	default:
-		filename = "code" + langDef.Extension
-	}
-
-	codePath := filepath.Join(tmpDir, filename)
-	if err := os.WriteFile(codePath, []byte(req.Code), 0644); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if langDef.NeedCompile {
-		compileOutput, err := executor.Compile(r.Context(), langDef, tmpDir, codePath)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(executor.Result{
-				Verdict: executor.VerdictCompilationError,
-				Message: string(compileOutput),
-			})
-			return
-		}
-	}
-
-	testCases := make([]executor.TestCase, len(req.Inputs))
-	for i := range req.Inputs {
-		testCases[i] = executor.TestCase{
-			Input:    req.Inputs[i],
-			Expected: req.Expected[i],
-		}
-	}
-
-	if req.Mode == "submit" || req.Mode == "" {
-		for _, tc := range testCases {
-			ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeLimit)*time.Second)
-			output, _, err := executor.RunCase(ctx, langDef, tmpDir, tc.Input, timeLimit, memLimit)
-			cancel()
-
-			var v executor.Verdict
-			if err != nil {
-				if errors.Is(err, context.DeadlineExceeded) {
-					v = executor.VerdictTimeLimitExceeded
-				} else {
-					v = executor.VerdictRuntimeError
-				}
-			} else if !executor.CompareOutput(string(output), tc.Expected) {
-				v = executor.VerdictWrongAnswer
-			} else {
-				v = executor.VerdictAccepted
-			}
-
-			if v != executor.VerdictAccepted {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(executor.Result{
-					Verdict: v,
-					Message: executor.VerdictToString(v),
-				})
-				return
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(executor.Result{
-			Verdict: executor.VerdictAccepted,
-			Message: "Accepted",
-		})
-		return
-	}
-
-	parallel := h.cfg.CasesParallel
-	idxChan := make(chan int, len(testCases))
-	resChan := make(chan caseResult, len(testCases))
-	var wg sync.WaitGroup
-
-	for w := 0; w < parallel; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for idx := range idxChan {
-				tc := testCases[idx]
-				ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeLimit)*time.Second)
-				output, rt, err := executor.RunCase(ctx, langDef, tmpDir, tc.Input, timeLimit, memLimit)
-				cancel()
-				resChan <- caseResult{idx, output, rt, err}
-			}
-		}()
-	}
-
-	for i := range testCases {
-		idxChan <- i
-	}
-	close(idxChan)
-	go func() {
-		wg.Wait()
-		close(resChan)
-	}()
-
-	results := make([]executor.TestCaseResult, len(testCases))
-	overallVerdict := executor.VerdictAccepted
-	totalTime := 0.0
-	severity := map[executor.Verdict]int{
-		executor.VerdictTimeLimitExceeded: 1,
-		executor.VerdictRuntimeError:      2,
-		executor.VerdictWrongAnswer:       3,
-		executor.VerdictAccepted:          4,
-	}
-	currentSeverity := 4
-
-	for res := range resChan {
-		var v executor.Verdict
-		if res.err != nil {
-			if errors.Is(res.err, context.DeadlineExceeded) {
-				v = executor.VerdictTimeLimitExceeded
-			} else {
-				v = executor.VerdictRuntimeError
-			}
-		} else if !executor.CompareOutput(string(res.output), testCases[res.index].Expected) {
-			v = executor.VerdictWrongAnswer
-		} else {
-			v = executor.VerdictAccepted
-		}
-
-		results[res.index] = executor.TestCaseResult{
-			Number:   res.index + 1,
-			Passed:   v == executor.VerdictAccepted,
-			Input:    testCases[res.index].Input,
-			Expected: testCases[res.index].Expected,
-			Output:   string(res.output),
-			Time:     res.runTime,
-		}
-		totalTime += res.runTime
-		if s, ok := severity[v]; ok && s < currentSeverity {
-			currentSeverity = s
-			overallVerdict = v
-		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(executor.Result{
-		Verdict:   overallVerdict,
-		TestCases: results,
-		TotalTime: totalTime,
-	})
+
+	if mode == "submit" {
+		submitResp := struct {
+			Verdict executor.Verdict `json:"verdict"`
+			Message string           `json:"message,omitempty"`
+		}{
+			Verdict: result.Verdict,
+		}
+
+		if result.Verdict != executor.VerdictAccepted {
+			if result.Message != "" {
+				submitResp.Message = result.Message
+			} else if len(result.TestCases) > 0 {
+				for _, tc := range result.TestCases {
+					if !tc.Passed {
+						submitResp.Message = fmt.Sprintf("Falha no caso %d", tc.Number)
+						break
+					}
+				}
+			}
+			if submitResp.Message == "" {
+				submitResp.Message = executor.VerdictToString(result.Verdict)
+			}
+		}
+
+		_ = json.NewEncoder(w).Encode(submitResp)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(result)
 }

@@ -16,6 +16,8 @@ public class Worker {
 
         while (true) {
             String lang = in.readLine();
+            if (lang == null) break;
+
             StringBuilder codeBuilder = new StringBuilder();
             String line;
             while (!(line = in.readLine()).equals("---END_CODE---")) {
@@ -23,130 +25,201 @@ public class Worker {
             }
             String code = codeBuilder.toString();
 
-            int numCases = Integer.parseInt(in.readLine());
-            String[] inputs = new String[numCases];
-            String[] expected = new String[numCases];
-            for (int i = 0; i < numCases; i++) {
-                inputs[i] = in.readLine();
-                expected[i] = in.readLine();
-            }
-
             int timeLimit = Integer.parseInt(in.readLine());
 
             Path tmpDir = Files.createTempDirectory("worker_");
             try {
-                boolean ok;
+                Method mainMethod = null;
                 if (lang.equals("java")) {
-                    ok = processJava(tmpDir, code, inputs, expected, timeLimit, out);
+                    mainMethod = compileJava(tmpDir, code, out);
                 } else if (lang.equals("kotlin")) {
-                    ok = processKotlin(tmpDir, code, inputs, expected, timeLimit, out);
+                    mainMethod = compileKotlin(tmpDir, code, out);
                 } else {
                     out.println("COMPILATION_ERROR");
-                    out.println("Linguagem não suportada");
-                    ok = false;
+                    out.println("Linguagem nao suportada");
+                    out.println("---SEP---");
+                    continue;
                 }
-                if (!ok) continue;
+
+                if (mainMethod == null) continue;
+
+                out.println("COMPILED_OK");
+
+                while (true) {
+                    String cmd = in.readLine();
+                    if (cmd == null || cmd.equals("STOP_CASES")) {
+                        break;
+                    }
+                    if (cmd.equals("RUN_CASE")) {
+                        String input = readUntilSep(in);
+                        runSingleCase(mainMethod, input, timeLimit, out);
+                    }
+                }
             } finally {
                 deleteDirectory(tmpDir.toFile());
             }
         }
     }
 
-    private static boolean processJava(Path tmpDir, String code, String[] inputs, String[] expected, int timeLimit, PrintWriter out) throws Exception {
-        Path javaFile = tmpDir.resolve("Main.java");
-        Files.write(javaFile, code.getBytes());
-
-        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
-        int compileResult = compiler.run(null, null, null, "-d", tmpDir.toString(), javaFile.toString());
-        if (compileResult != 0) {
-            out.println("COMPILATION_ERROR");
-            out.println("Erro de compilação Java");
-            return false;
+    private static String readUntilSep(BufferedReader in) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = in.readLine()) != null && !line.equals("---SEP---")) {
+            sb.append(line).append("\n");
         }
-
-        URLClassLoader classLoader = URLClassLoader.newInstance(new URL[]{tmpDir.toUri().toURL()});
-        Class<?> mainClass = classLoader.loadClass("Main");
-        Method mainMethod = mainClass.getMethod("main", String[].class);
-
-        return runCases(mainMethod, inputs, expected, timeLimit, out);
+        return sb.toString();
     }
 
-    private static boolean processKotlin(Path tmpDir, String code, String[] inputs, String[] expected, int timeLimit, PrintWriter out) throws Exception {
-        Path ktFile = tmpDir.resolve("code.kt");
-        Files.write(ktFile, code.getBytes());
+    private static Method compileJava(Path tmpDir, String code, PrintWriter out) throws Exception {
+            Path javaFile = tmpDir.resolve("Main.java");
+            Files.write(javaFile, code.getBytes());
 
-        ProcessBuilder pb = new ProcessBuilder("kotlinc", ktFile.toString(), "-include-runtime", "-d", tmpDir.resolve("code.jar").toString());
-        pb.directory(tmpDir.toFile());
-        Process p = pb.start();
-        int exitCode = p.waitFor();
-        if (exitCode != 0) {
-            out.println("COMPILATION_ERROR");
-            out.println("Erro de compilação Kotlin");
-            return false;
+            JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+            ByteArrayOutputStream errStream = new ByteArrayOutputStream();
+
+            FutureTask<Integer> compileTask = new FutureTask<>(() ->
+                    compiler.run(null, null, errStream, "-d", tmpDir.toString(), javaFile.toString())
+            );
+            executor.submit(compileTask);
+
+            try {
+                int compileResult = compileTask.get(30, TimeUnit.SECONDS);
+                if (compileResult != 0) {
+                    out.println("COMPILATION_ERROR");
+                    out.println(errStream.toString());
+                    out.println("---SEP---");
+                    return null;
+                }
+            } catch (TimeoutException e) {
+                compileTask.cancel(true);
+                out.println("COMPILATION_ERROR");
+                out.println("Tempo limite de compilacao excedido (30s).");
+                out.println("---SEP---");
+                return null;
+            } catch (Exception e) {
+                out.println("COMPILATION_ERROR");
+                out.println("Erro interno do compilador.");
+                out.println("---SEP---");
+                return null;
+            }
+
+            URLClassLoader classLoader = URLClassLoader.newInstance(new URL[]{tmpDir.toUri().toURL()});
+            Class<?> mainClass = classLoader.loadClass("Main");
+            return mainClass.getMethod("main", String[].class);
         }
 
-        URLClassLoader classLoader = URLClassLoader.newInstance(new URL[]{tmpDir.resolve("code.jar").toUri().toURL()});
-        Class<?> mainClass = classLoader.loadClass("CodeKt");
-        Method mainMethod = mainClass.getMethod("main", String[].class);
+        private static Method compileKotlin(Path tmpDir, String code, PrintWriter out) throws Exception {
+            Path ktFile = tmpDir.resolve("code.kt");
+            Files.write(ktFile, code.getBytes());
 
-        return runCases(mainMethod, inputs, expected, timeLimit, out);
-    }
+            ProcessBuilder pb = new ProcessBuilder("kotlinc", ktFile.toString(), "-include-runtime", "-d", tmpDir.resolve("code.jar").toString());
+            pb.directory(tmpDir.toFile());
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
 
-    private static boolean runCases(Method mainMethod, String[] inputs, String[] expected, int timeLimit, PrintWriter out) throws Exception {
-        double totalTime = 0;
-        for (int i = 0; i < inputs.length; i++) {
-            final int caseIndex = i;
-            final String input = inputs[i];
-            final String expectedOutput = expected[i];
+            FutureTask<String> readTask = new FutureTask<>(() -> {
+                StringBuilder errSb = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        errSb.append(line).append("\n");
+                    }
+                }
+                return errSb.toString();
+            });
+            executor.submit(readTask);
 
+            boolean finished = p.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                p.destroyForcibly();
+                readTask.cancel(true);
+                out.println("COMPILATION_ERROR");
+                out.println("Tempo limite de compilacao excedido (30s).");
+                out.println("---SEP---");
+                return null;
+            }
+
+            int exitCode = p.exitValue();
+            String errorOutput = readTask.get();
+            if (exitCode != 0) {
+                out.println("COMPILATION_ERROR");
+                out.println(errorOutput);
+                out.println("---SEP---");
+                return null;
+            }
+
+            URLClassLoader classLoader = URLClassLoader.newInstance(new URL[]{tmpDir.resolve("code.jar").toUri().toURL()});
+            Class<?> mainClass = classLoader.loadClass("CodeKt");
+            return mainClass.getMethod("main", String[].class);
+        }
+
+    private static void runSingleCase(Method mainMethod, String input, int timeLimit, PrintWriter out) {
             FutureTask<String> task = new FutureTask<>(() -> {
+                PrintStream originalOut = System.out;
+                InputStream originalIn = System.in;
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                System.setOut(new PrintStream(baos));
-                System.setIn(new ByteArrayInputStream(input.getBytes()));
 
-                long start = System.nanoTime();
-                mainMethod.invoke(null, (Object) new String[0]);
-                long elapsed = System.nanoTime() - start;
-                double elapsedSec = elapsed / 1e9;
+                try {
+                    System.setOut(new PrintStream(baos));
+                    System.setIn(new ByteArrayInputStream(input.getBytes()));
 
-                String output = baos.toString().trim();
-                return output + "\n" + elapsedSec;
+                    long start = System.nanoTime();
+                    mainMethod.invoke(null, (Object) new String[0]);
+                    long elapsed = System.nanoTime() - start;
+                    double elapsedSec = elapsed / 1e9;
+
+                    return baos.toString() + "---TIME---" + elapsedSec;
+                } finally {
+                    System.setOut(originalOut);
+                    System.setIn(originalIn);
+                }
             });
 
             executor.submit(task);
             try {
                 String result = task.get(timeLimit, TimeUnit.SECONDS);
-                String[] parts = result.split("\n", 2);
-                String output = parts[0];
-                double elapsedSec = Double.parseDouble(parts[1]);
-
-                totalTime += elapsedSec;
-                if (elapsedSec > timeLimit) {
-                    out.println("TIME_LIMIT_EXCEEDED");
-                    out.println(caseIndex);
-                    return false;
+                String[] parts = result.split("---TIME---");
+                out.println("OK");
+                out.println(parts[1]);
+                out.print(parts[0]);
+                if (!parts[0].endsWith("\n") && !parts[0].isEmpty()) {
+                    out.println();
                 }
-
-                if (!output.equals(expectedOutput.trim())) {
-                    out.println("WRONG_ANSWER");
-                    out.println(caseIndex);
-                    return false;
-                }
+                out.println("---SEP---");
             } catch (TimeoutException e) {
                 task.cancel(true);
                 out.println("TIME_LIMIT_EXCEEDED");
-                out.println(caseIndex);
-                return false;
+                out.println("---SEP---");
             } catch (Exception e) {
                 out.println("RUNTIME_ERROR");
-                out.println(caseIndex);
-                return false;
+
+                Throwable cause = e;
+                while (cause instanceof ExecutionException || cause instanceof java.lang.reflect.InvocationTargetException) {
+                    if (cause.getCause() != null) {
+                        cause = cause.getCause();
+                    } else {
+                        break;
+                    }
+                }
+
+                StringBuilder errSb = new StringBuilder();
+                errSb.append(cause.toString()).append("\n");
+
+                for (StackTraceElement ste : cause.getStackTrace()) {
+                    String className = ste.getClassName();
+                    if (className.equals("Worker")) {
+                        break;
+                    }
+                    if (className.startsWith("jdk.internal.reflect") || className.startsWith("java.lang.reflect")) {
+                        continue;
+                    }
+                    errSb.append("\tat ").append(ste.toString()).append("\n");
+                }
+
+                out.println(errSb.toString().trim());
+                out.println("---SEP---");
             }
         }
-        out.println("ACCEPTED");
-        out.println(totalTime);
-        return true;
-    }
 
     private static void deleteDirectory(File dir) {
         File[] files = dir.listFiles();
