@@ -171,7 +171,6 @@ func (h *Handler) executeHandler(w http.ResponseWriter, r *http.Request) {
 		case executor.VerdictTimeLimitExceeded:
 			submitResp.Message = "Time Limit Exceeded"
 		case executor.VerdictRuntimeError, executor.VerdictCompilationError:
-
 			var rawMsg string
 			if len(result.TestCases) > 0 && result.TestCases[0].Output != "" {
 				rawMsg = result.TestCases[0].Output
@@ -185,14 +184,27 @@ func (h *Handler) executeHandler(w http.ResponseWriter, r *http.Request) {
 					if trimmed == "" {
 						continue
 					}
-
 					if strings.HasPrefix(trimmed, "  File") ||
 						strings.HasPrefix(trimmed, "at ") ||
-						strings.Contains(trimmed, "Traceback") {
+						strings.Contains(trimmed, "Traceback") ||
+						strings.Contains(trimmed, "Exception in thread") {
 						continue
 					}
-					submitResp.Message = trimmed
-					break
+					if strings.Contains(trimmed, "Error") || strings.Contains(trimmed, "Exception") {
+						submitResp.Message = trimmed
+						break
+					}
+					if submitResp.Message == "" && !strings.Contains(trimmed, "File") {
+						submitResp.Message = trimmed
+					}
+				}
+				if submitResp.Message == "" {
+					for _, line := range lines {
+						if strings.TrimSpace(line) != "" {
+							submitResp.Message = strings.TrimSpace(line)
+							break
+						}
+					}
 				}
 			}
 			if submitResp.Message == "" {
