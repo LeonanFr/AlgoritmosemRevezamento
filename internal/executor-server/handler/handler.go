@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os/exec"
+	"strings"
 )
 
 type ExecuteRequest struct {
@@ -162,8 +163,47 @@ func (h *Handler) executeHandler(w http.ResponseWriter, r *http.Request) {
 			Verdict: result.Verdict,
 		}
 
-		if result.Message != "" {
-			submitResp.Message = result.Message
+		switch result.Verdict {
+		case executor.VerdictAccepted:
+			submitResp.Message = "Accepted"
+		case executor.VerdictWrongAnswer:
+			submitResp.Message = "As respostas não batem com o esperado."
+		case executor.VerdictTimeLimitExceeded:
+			submitResp.Message = "Time Limit Exceeded"
+		case executor.VerdictRuntimeError, executor.VerdictCompilationError:
+
+			var rawMsg string
+			if len(result.TestCases) > 0 && result.TestCases[0].Output != "" {
+				rawMsg = result.TestCases[0].Output
+			} else if result.Message != "" {
+				rawMsg = result.Message
+			}
+			if rawMsg != "" {
+				lines := strings.Split(rawMsg, "\n")
+				for _, line := range lines {
+					trimmed := strings.TrimSpace(line)
+					if trimmed == "" {
+						continue
+					}
+
+					if strings.HasPrefix(trimmed, "  File") ||
+						strings.HasPrefix(trimmed, "at ") ||
+						strings.Contains(trimmed, "Traceback") {
+						continue
+					}
+					submitResp.Message = trimmed
+					break
+				}
+			}
+			if submitResp.Message == "" {
+				submitResp.Message = executor.VerdictToString(result.Verdict)
+			}
+		default:
+			if result.Message != "" {
+				submitResp.Message = result.Message
+			} else {
+				submitResp.Message = executor.VerdictToString(result.Verdict)
+			}
 		}
 
 		_ = json.NewEncoder(w).Encode(submitResp)
