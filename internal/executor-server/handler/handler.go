@@ -4,7 +4,6 @@ import (
 	"Algorithms/internal/executor"
 	"Algorithms/internal/executor-server/config"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os/exec"
 )
@@ -163,20 +162,8 @@ func (h *Handler) executeHandler(w http.ResponseWriter, r *http.Request) {
 			Verdict: result.Verdict,
 		}
 
-		if result.Verdict != executor.VerdictAccepted {
-			if result.Message != "" {
-				submitResp.Message = result.Message
-			} else if len(result.TestCases) > 0 {
-				for _, tc := range result.TestCases {
-					if !tc.Passed {
-						submitResp.Message = fmt.Sprintf("Falha no caso %d", tc.Number)
-						break
-					}
-				}
-			}
-			if submitResp.Message == "" {
-				submitResp.Message = executor.VerdictToString(result.Verdict)
-			}
+		if result.Message != "" {
+			submitResp.Message = result.Message
 		}
 
 		_ = json.NewEncoder(w).Encode(submitResp)
