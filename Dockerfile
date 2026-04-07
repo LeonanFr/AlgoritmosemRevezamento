@@ -7,7 +7,7 @@ RUN go mod download
 COPY . .
 RUN go build -tags netgo -ldflags '-s -w' -o executor ./cmd/executor-server
 
-FROM openjdk:17-jdk-alpine
+FROM eclipse-temurin:17-jdk-alpine
 
 WORKDIR /app
 
