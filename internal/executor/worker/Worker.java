@@ -11,6 +11,8 @@ public class Worker {
     private static final ExecutorService executor = Executors.newCachedThreadPool();
 
     public static void main(String[] args) throws Exception {
+        System.out.println("READY");
+        System.out.flush();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
         PrintWriter out = new PrintWriter(System.out, true);
 
@@ -47,6 +49,10 @@ public class Worker {
 
                 while (true) {
                     String cmd = in.readLine();
+                    if ("PING".equals(cmd)) {
+                        out.println("PONG");
+                        continue;
+                    }
                     if (cmd == null || cmd.equals("STOP_CASES")) {
                         break;
                     }
@@ -182,6 +188,7 @@ public class Worker {
                 out.println("OK");
                 out.println(parts[1]);
                 out.print(parts[0]);
+                out.flush();
                 if (!parts[0].endsWith("\n") && !parts[0].isEmpty()) {
                     out.println();
                 }
