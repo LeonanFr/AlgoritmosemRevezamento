@@ -13,6 +13,7 @@ public class Worker {
     public static void main(String[] args) throws Exception {
         System.out.println("READY");
         System.out.flush();
+
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
         PrintWriter out = new PrintWriter(System.out, true);
 
@@ -20,18 +21,36 @@ public class Worker {
             String lang = in.readLine();
             if (lang == null) break;
 
+            if ("PING".equals(lang)) {
+                out.println("PONG");
+                continue;
+            }
+
             StringBuilder codeBuilder = new StringBuilder();
             String line;
-            while (!(line = in.readLine()).equals("---END_CODE---")) {
+
+            while ((line = in.readLine()) != null && !line.equals("---END_CODE---")) {
                 codeBuilder.append(line).append("\n");
             }
+
+            if (line == null) {
+                break;
+            }
+
             String code = codeBuilder.toString();
 
-            int timeLimit = Integer.parseInt(in.readLine());
+            String timeLimitLine = in.readLine();
+            if (timeLimitLine == null) {
+                break;
+            }
+
+            int timeLimit = Integer.parseInt(timeLimitLine);
 
             Path tmpDir = Files.createTempDirectory("worker_");
+
             try {
                 Method mainMethod = null;
+
                 if (lang.equals("java")) {
                     mainMethod = compileJava(tmpDir, code, out);
                 } else if (lang.equals("kotlin")) {
@@ -43,19 +62,24 @@ public class Worker {
                     continue;
                 }
 
-                if (mainMethod == null) continue;
+                if (mainMethod == null) {
+                    continue;
+                }
 
                 out.println("COMPILED_OK");
 
                 while (true) {
                     String cmd = in.readLine();
+
                     if ("PING".equals(cmd)) {
                         out.println("PONG");
                         continue;
                     }
+
                     if (cmd == null || cmd.equals("STOP_CASES")) {
                         break;
                     }
+
                     if (cmd.equals("RUN_CASE")) {
                         String input = readUntilSep(in);
                         runSingleCase(mainMethod, input, timeLimit, out);

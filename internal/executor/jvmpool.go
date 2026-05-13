@@ -6,6 +6,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type JVMWorker struct {
@@ -43,58 +44,125 @@ func InitJVMPool(size int, classpath, xmx string) error {
 
 func createWorker() (*JVMWorker, error) {
 	cmd := exec.Command("java", "-Xmx"+poolXmx, "-cp", poolClasspath, "Worker")
+
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
+
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+
 	worker := &JVMWorker{
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: bufio.NewReader(stdout),
 	}
+
 	ready, err := worker.stdout.ReadString('\n')
 	if err != nil || strings.TrimSpace(ready) != "READY" {
-		cmd.Process.Kill()
-		return nil, fmt.Errorf("worker não enviou READY: %v", err)
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+
+		return nil, fmt.Errorf(
+			"worker não enviou READY: readErr=%v; stdout=%q; stderr=%q; classpath=%q",
+			err,
+			strings.TrimSpace(ready),
+			strings.TrimSpace(stderr.String()),
+			poolClasspath,
+		)
 	}
+
 	return worker, nil
 }
 
 func GetJVMWorker() *JVMWorker {
-	w := <-globalPool.workers
+	for {
+		w := <-globalPool.workers
 
-	w.stdin.Write([]byte("PING\n"))
-	resp, err := w.stdout.ReadString('\n')
-	if err != nil || strings.TrimSpace(resp) != "PONG" {
-		w.cmd.Process.Kill()
-		newW, err := createWorker()
-		if err != nil {
+		if pingWorker(w) {
 			return w
 		}
-		return newW
+
+		killWorker(w)
+
+		for {
+			newW, err := createWorker()
+			if err == nil {
+				return newW
+			}
+
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
-	return w
+}
+
+func pingWorker(w *JVMWorker) bool {
+	if w == nil || w.stdin == nil || w.stdout == nil {
+		return false
+	}
+
+	if _, err := fmt.Fprintln(w.stdin, "PING"); err != nil {
+		return false
+	}
+
+	type pingResult struct {
+		resp string
+		err  error
+	}
+
+	ch := make(chan pingResult, 1)
+
+	go func() {
+		resp, err := w.stdout.ReadString('\n')
+		ch <- pingResult{resp: resp, err: err}
+	}()
+
+	select {
+	case result := <-ch:
+		return result.err == nil && strings.TrimSpace(result.resp) == "PONG"
+
+	case <-time.After(2 * time.Second):
+		return false
+	}
+}
+
+func killWorker(w *JVMWorker) {
+	if w == nil || w.cmd == nil || w.cmd.Process == nil {
+		return
+	}
+
+	_ = w.cmd.Process.Kill()
+	_ = w.cmd.Wait()
 }
 
 func ReleaseJVMWorker(w *JVMWorker, tainted bool) {
 	if tainted {
-		w.cmd.Process.Kill()
-		newW, err := createWorker()
-		if err != nil {
-			globalPool.workers <- w
-			return
+		killWorker(w)
+
+		for {
+			newW, err := createWorker()
+			if err == nil {
+				globalPool.workers <- newW
+				return
+			}
+
+			time.Sleep(500 * time.Millisecond)
 		}
-		globalPool.workers <- newW
-	} else {
-		globalPool.workers <- w
 	}
+
+	globalPool.workers <- w
 }
 
 func readUntilSep(reader *bufio.Reader) string {

@@ -66,6 +66,19 @@ func CompareOutput(actual, expected string) bool {
 	return normalize(actual) == normalize(expected)
 }
 
+func shouldTaintJVMWorker(res *Result) bool {
+	if res == nil {
+		return true
+	}
+
+	switch res.Verdict {
+	case VerdictTimeLimitExceeded, VerdictRuntimeError, "":
+		return true
+	default:
+		return false
+	}
+}
+
 func Execute(ctx context.Context, code string, lang string, testCases []TestCase, timeLimitSec int, memoryLimitMB int) (*Result, error) {
 	langDef, err := GetLanguage(lang)
 	if err != nil {
@@ -76,11 +89,24 @@ func Execute(ctx context.Context, code string, lang string, testCases []TestCase
 		if globalPool == nil {
 			return nil, fmt.Errorf("pool JVM ausente")
 		}
-		worker := GetJVMWorker()
-		res := worker.Execute(lang, code, testCases, timeLimitSec)
 
-		tainted := res.Verdict == VerdictTimeLimitExceeded || res.Verdict == VerdictRuntimeError || res.Verdict == ""
-		ReleaseJVMWorker(worker, tainted)
+		worker := GetJVMWorker()
+		tainted := true
+
+		defer func() {
+			ReleaseJVMWorker(worker, tainted)
+		}()
+
+		res := worker.Execute(lang, code, testCases, timeLimitSec)
+		if res == nil {
+			return &Result{
+				Verdict: VerdictRuntimeError,
+				Message: "Worker JVM retornou resultado nulo",
+			}, nil
+		}
+
+		tainted = shouldTaintJVMWorker(res)
+
 		return res, nil
 	}
 
