@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -48,14 +49,22 @@ func Load() *Config {
 	if poolSize <= 0 {
 		poolSize = 5
 	}
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		workDir = "."
+	}
+
 	classpath := os.Getenv("EXECUTOR_JVM_CLASSPATH")
 	if classpath == "" {
-		classpath = "./internal/executor/worker"
+		classpath = filepath.Join(workDir, "internal", "executor", "worker")
 	}
+
 	jvmXmx := os.Getenv("EXECUTOR_JVM_XMX")
 	if jvmXmx == "" {
 		jvmXmx = "1g"
 	}
+
 	return &Config{
 		Port:             port,
 		AuthToken:        token,

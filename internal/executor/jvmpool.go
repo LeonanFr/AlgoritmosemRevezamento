@@ -31,46 +31,67 @@ func InitJVMPool(size int, classpath, xmx string) error {
 		workers: make(chan *JVMWorker, size),
 	}
 	for i := 0; i < size; i++ {
-		cmd := exec.Command("java", "-Xmx"+xmx, "-cp", classpath, "Worker")
-		stdin, err := cmd.StdinPipe()
+		w, err := createWorker()
 		if err != nil {
 			return err
 		}
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			return err
-		}
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		worker := &JVMWorker{
-			cmd:    cmd,
-			stdin:  stdin,
-			stdout: bufio.NewReader(stdout),
-		}
-		pool.workers <- worker
+		pool.workers <- w
 	}
 	globalPool = pool
 	return nil
 }
 
+func createWorker() (*JVMWorker, error) {
+	cmd := exec.Command("java", "-Xmx"+poolXmx, "-cp", poolClasspath, "Worker")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	worker := &JVMWorker{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: bufio.NewReader(stdout),
+	}
+	ready, err := worker.stdout.ReadString('\n')
+	if err != nil || strings.TrimSpace(ready) != "READY" {
+		cmd.Process.Kill()
+		return nil, fmt.Errorf("worker não enviou READY: %v", err)
+	}
+	return worker, nil
+}
+
 func GetJVMWorker() *JVMWorker {
-	return <-globalPool.workers
+	w := <-globalPool.workers
+
+	w.stdin.Write([]byte("PING\n"))
+	resp, err := w.stdout.ReadString('\n')
+	if err != nil || strings.TrimSpace(resp) != "PONG" {
+		w.cmd.Process.Kill()
+		newW, err := createWorker()
+		if err != nil {
+			return w
+		}
+		return newW
+	}
+	return w
 }
 
 func ReleaseJVMWorker(w *JVMWorker, tainted bool) {
 	if tainted {
-		_ = w.cmd.Process.Kill()
-		cmd := exec.Command("java", "-Xmx"+poolXmx, "-cp", poolClasspath, "Worker")
-		stdin, _ := cmd.StdinPipe()
-		stdout, _ := cmd.StdoutPipe()
-		_ = cmd.Start()
-		newWorker := &JVMWorker{
-			cmd:    cmd,
-			stdin:  stdin,
-			stdout: bufio.NewReader(stdout),
+		w.cmd.Process.Kill()
+		newW, err := createWorker()
+		if err != nil {
+			globalPool.workers <- w
+			return
 		}
-		globalPool.workers <- newWorker
+		globalPool.workers <- newW
 	} else {
 		globalPool.workers <- w
 	}
